@@ -1,0 +1,7 @@
+{
+  "name": "CTFd-LDAP",
+  "version": "1.0.0",
+  "description": "LDAP / Active Directory authentication for CTFd. Supports bind-and-search, direct bind, group-based access control, and auto-provisioning of users.",
+  "author": "",
+  "license": "MIT"
+}
