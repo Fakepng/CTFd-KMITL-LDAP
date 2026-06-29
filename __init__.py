@@ -30,7 +30,7 @@ from flask import (
     redirect, url_for, flash, session
 )
 from ldap3 import Server, Connection, SIMPLE, AUTO_BIND_NO_TLS, Tls, ALL, SUBTREE
-from ldap3.core.exceptions import LDAPBindError, LDAPException, LDAPSocketOpenError
+from ldap3.core.exceptions import LDAPBindError, LDAPInvalidCredentialsResult, LDAPException, LDAPSocketOpenError
 
 from CTFd.models import Users, db
 from CTFd.utils import get_config
@@ -76,6 +76,8 @@ FACULTY_MAP = {
     "15": "ami",
     "16": "nano",
 }
+
+FACULTY_DISPLAY = dict(FACULTY_MAP)
 
 
 # ---------------------------------------------------------------------------
@@ -282,12 +284,15 @@ def kmitl_authenticate(raw_input: str, password: str):
             "student_id":   student_id,
             "faculty_code": faculty_code,
             "faculty_ou":   faculty_ou,
+            "faculty_name": FACULTY_DISPLAY.get(faculty_code, faculty_ou),
             "dn":           dn,
             "cn":           extra.get("cn", ""),
             "mail":         extra.get("mail", f"{student_id}@kmitl.ac.th"),
         }
         return True, info
 
+    except LDAPInvalidCredentialsResult:
+        return False, "Invalid credentials. Check your student ID and password."
     except LDAPBindError:
         return False, "Invalid credentials. Check your student ID and password."
     except LDAPSocketOpenError:
