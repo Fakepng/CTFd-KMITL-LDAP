@@ -54,6 +54,8 @@ LDAP_CONFIG = {
     "ALLOW_LOCAL_ADMIN": os.environ.get("LDAP_ALLOW_LOCAL_ADMIN", "true").lower() == "true",
     # Auto-create CTFd account on first successful LDAP login
     "AUTO_PROVISION": os.environ.get("LDAP_AUTO_PROVISION", "true").lower() == "true",
+    "KMITL_DEVELOPER_KEY": os.environ.get("KMITL_DEVELOPER_KEY", None),
+    "KMITL_DEVELOPER_API": os.environ.get("KMITL_DEVELOPER_API", "https://api.kmitl.ac.th/student-catalog/v1"),
 }
 
 # ---------------------------------------------------------------------------
@@ -75,21 +77,73 @@ FACULTY_MAP = {
     "16": "nano",
 }
 
-FACULTY_DISPLAY = {
-    "01": "Faculty of Engineering",
-    "02": "Faculty of Architecture",
-    "03": "Faculty of Industrial Education and Technology",
-    "04": "Faculty of Agricultural Technology",
-    "05": "Faculty of Science",
-    "07": "Faculty of Information Technology",
-    "08": "Faculty of Agro-Industry",
-    "11": "Faculty of Administration and Management",
-    "12": "Faculty of Liberal Arts",
-    "13": "International Academy of Aviation Industry",
-    "14": "Faculty of Medicine",
-    "15": "College of Advanced Manufacturing Innovation",
-    "16": "College of Nanotechnology",
-}
+
+# ---------------------------------------------------------------------------
+# Get student curriculum name from KMITL catalog API
+# ---------------------------------------------------------------------------
+
+def get_student_curriculum(student_id: str):
+    """
+    Fetch the student's curriculum name from KMITL's catalog API.
+    Returns a string like "Bachelor of Engineering Program in Food Engineering"
+    or None if not found / error.
+    """
+    import requests
+
+    api_url = LDAP_CONFIG["KMITL_DEVELOPER_API"]
+    api_key = LDAP_CONFIG["KMITL_DEVELOPER_KEY"]
+
+    if not api_key:
+        logger.warning("KMITL LDAP: No developer API key set; cannot fetch curriculum.")
+        return None
+
+    try:
+        response = requests.get(
+            f"{api_url}/students/{student_id}",
+            headers={"apikey": f"{api_key}"},
+            timeout=5,
+        )
+        response.raise_for_status()
+        data = response.json()
+        curriculum_name = data.get("curriculum_name_en")
+        return curriculum_name
+    except Exception as exc:
+        logger.error("KMITL LDAP: Error fetching curriculum for %s: %s", student_id, exc)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Format curriculum names
+# ---------------------------------------------------------------------------
+
+def format_curriculum(text):
+    match = re.match(r"^Bachelor of.*?(?:(\()| in )(.*)", text)
+
+    if match:
+        was_separated_by_paren = match.group(1)
+        cleaned = match.group(2)
+
+        # 1. ONLY remove a trailing ')' if it was separated by a parenthesis
+        # AND if there is an extra unmatched closing parenthesis.
+        if was_separated_by_paren:
+            if cleaned.endswith(")") and cleaned.count(")") > cleaned.count("("):
+                cleaned = cleaned.rstrip(")")
+
+        # 2. NEW RULE: Check if it's an Engineering degree but "Engineering" is missing from the cleaned name
+        # (We check for 'Efngineering' just to safely catch that typo in your data!)
+        if re.search(r"engineering", text, re.IGNORECASE) or "Efngineering" in text:
+            if "Engineering" not in cleaned:
+                # Smart insert: If there is a trailing parenthesis tag, put "Engineering" BEFORE it.
+                # Otherwise, just add it to the end.
+                paren_match = re.search(r"(\s*\(.*\))$", cleaned)
+                if paren_match:
+                    cleaned = cleaned[:paren_match.start()] + " Engineering" + paren_match.group(1)
+                else:
+                    cleaned += " Engineering"
+
+        return cleaned
+
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -228,7 +282,6 @@ def kmitl_authenticate(raw_input: str, password: str):
             "student_id":   student_id,
             "faculty_code": faculty_code,
             "faculty_ou":   faculty_ou,
-            "faculty_name": FACULTY_DISPLAY.get(faculty_code, faculty_ou),
             "dn":           dn,
             "cn":           extra.get("cn", ""),
             "mail":         extra.get("mail", f"{student_id}@kmitl.ac.th"),
@@ -269,6 +322,14 @@ def _get_or_create_ctfd_user(info: dict):
     if not LDAP_CONFIG["AUTO_PROVISION"]:
         return None
 
+    student_id = info["student_id"]
+    curriculum = get_student_curriculum(student_id)
+    formatted_curriculum = None
+
+    if curriculum:
+        curriculum = format_curriculum(curriculum)
+        formatted_curriculum = curriculum
+
     user = Users(
         name=display_name,
         email=email,
@@ -276,6 +337,7 @@ def _get_or_create_ctfd_user(info: dict):
         type="user",
         verified=True,
         hidden=False,
+        affiliation=formatted_curriculum
     )
     db.session.add(user)
     db.session.commit()
